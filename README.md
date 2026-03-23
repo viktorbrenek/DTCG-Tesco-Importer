@@ -1,40 +1,53 @@
-Below are the steps to get your plugin running. You can also find instructions at:
+# 🚀 DTCG Auto-Import pro Figmu
 
-  https://www.figma.com/plugin-docs/plugin-quickstart-guide/
+Tento lokální Figma plugin automatizuje import design tokenů ve standardizovaném formátu **DTCG (Design Tokens Community Group)** přímo do lokálních proměnných (Figma Variables).
 
-This plugin template uses Typescript and NPM, two standard tools in creating JavaScript applications.
+Plugin ušetří hodiny manuální práce – automaticky zakládá kolekce, vytváří proměnné pro světlý i tmavý režim a prolinkovává mezi sebou aliasy.
 
-First, download Node.js which comes with NPM. This will allow you to install TypeScript and other
-libraries. You can find the download link here:
+## ✨ Co plugin umí
+* **Automatická tvorba kolekcí:** Rozřadí tokeny do kolekcí `Palette`, `Radius`, `Spacing` a `Theme`.
+* **Podpora režimů (Modes):** V kolekci `Theme` automaticky zakládá a plní sloupce pro `Light` a `Dark` mode.
+* **Chytré propojování (Aliasing):** Pokud token odkazuje na jiný token (např. sémantická barva na paletu), plugin ve Figmě nevloží jen HEX kód, ale vytvoří skutečný **Variable Alias**.
+* **Nativní Figma UI:** Okno pluginu plně respektuje váš aktuální motiv ve Figmě (Světlý/Tmavý).
 
-  https://nodejs.org/en/download/
+---
 
-Next, install TypeScript using the command:
+## 📂 Jaké soubory plugin očekává?
+Plugin vyžaduje složku, ve které se nacházejí přesně tyto tři JSON soubory (založené na DTCG specifikaci):
 
-  npm install -g typescript
+1. `theme.dtcg.json` (Základní definice, palety, radiusy, mezery)
+2. `light.dtcg.json` (Sémantické hodnoty pro světlý režim)
+3. `dark.dtcg.json` (Sémantické hodnoty pro tmavý režim)
 
-Finally, in the directory of your plugin, get the latest type definitions for the plugin API by running:
+---
 
-  npm install --save-dev @figma/plugin-typings
+## 🛠 Jak plugin nainstalovat (Lokálně)
+Jelikož je plugin distribuován jako lokální složka (nebo ZIP archiv), pro jeho přidání do Figmy postupujte takto:
 
-If you are familiar with JavaScript, TypeScript will look very familiar. In fact, valid JavaScript code
-is already valid Typescript code.
+1. **Rozbalte složku s pluginem** na svém počítači (pokud jste ji dostali v `.zip`).
+2. Otevřete desktopovou aplikaci **Figma** a otevřete libovolný Design file.
+3. Klikněte kamkoliv na plátno **pravým tlačítkem myši**.
+4. Zvolte **Plugins** ➔ **Development** ➔ **Import plugin from manifest...**
+5. Najděte rozbalenou složku a vyberte v ní soubor `manifest.json`.
 
-TypeScript adds type annotations to variables. This allows code editors such as Visual Studio Code
-to provide information about the Figma API while you are writing code, as well as help catch bugs
-you previously didn't notice.
+*Hotovo! Plugin máte nyní nainstalovaný u sebe ve Figmě.*
 
-For more information, visit https://www.typescriptlang.org/
+---
 
-Using TypeScript requires a compiler to convert TypeScript (code.ts) into JavaScript (code.js)
-for the browser to run.
+## 💻 Jak plugin používat
+1. Spusťte plugin přes pravé tlačítko myši na plátně: **Plugins** ➔ **Development** ➔ **DTCG Importer**.
+2. V okně pluginu klikněte na oblast **📁 Vybrat složku s tokeny**.
+3. Vyberte složku ve vašem počítači, která obsahuje zmíněné 3 JSON soubory.
+4. Pokud plugin soubory úspěšně detekuje, zobrazí se zelené odškrtnutí a objeví se tlačítko **Spustit import**.
+5. Klikněte na tlačítko a počkejte. Během pár sekund Figma vygeneruje všechny Variables a vypíše zprávu o dokončení.
 
-We recommend writing TypeScript code using Visual Studio code:
+---
 
-1. Download Visual Studio Code if you haven't already: https://code.visualstudio.com/.
-2. Open this directory in Visual Studio Code.
-3. Compile TypeScript to JavaScript: Run the "Terminal > Run Build Task..." menu item,
-    then select "npm: watch". You will have to do this again every time
-    you reopen Visual Studio Code.
+## 👨‍💻 Pro vývojáře (Úprava kódu)
+Plugin se skládá z následujících souborů:
+* `ui.html` – Uživatelské rozhraní pluginu (HTML/CSS/JS).
+* `code.ts` – Hlavní logika pluginu komunikující s Figma API (zde se odehrává parsování a tvorba Variables).
+* `code.js` – Zkompilovaný kód z TypeScriptu. **Toto je soubor, který Figma reálně spouští.**
+* `manifest.json` – Konfigurační soubor pro Figmu.
 
-That's it! Visual Studio Code will regenerate the JavaScript file every time you save.
+Pokud budete upravovat logiku v `code.ts`, nezapomeňte kód před spuštěním zkompilovat do `code.js` (např. pomocí příkazu `tsc`).
