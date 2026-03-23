@@ -27,6 +27,36 @@ type ManualOverride = {
   values: { [modeName: string]: ManualValue };
 };
 
+function aliasCandidates(aliasName: string): string[] {
+  const candidates: string[] = [aliasName];
+
+  // Some text palette refs come as text/text-foo, while imported vars are text/foo.
+  if (aliasName.indexOf("text/text-") === 0) {
+    candidates.push(`text/${aliasName.slice("text/text-".length)}`);
+  }
+
+  // Some functional refs point to *-disabled variants that are not present in light/dark sources.
+  // Fallback to the base token name to keep alias linking instead of leaving hardcoded values.
+  if (aliasName.endsWith("-disabled")) {
+    candidates.push(aliasName.slice(0, -"-disabled".length));
+  }
+
+  const uniq: string[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    if (uniq.indexOf(candidates[i]) === -1) uniq.push(candidates[i]);
+  }
+  return uniq;
+}
+
+function findAliasTargetByName(aliasName: string, byName: { [name: string]: Variable }): Variable | null {
+  const candidates = aliasCandidates(aliasName);
+  for (let i = 0; i < candidates.length; i++) {
+    const target = byName[candidates[i]];
+    if (target) return target;
+  }
+  return null;
+}
+
 // NOVÁ FUNKCE: Automaticky vygeneruje seznam overridů podle obsahu DTCG JSONu,
 // takže už to nikdy nemusíš psát ručně.
 function generateOverridesFromJSON(definitionsData: any): ManualOverride[] {
@@ -151,7 +181,7 @@ async function applyManualOverrides(overrides: ManualOverride[]) {
         if (!modeId) continue;
 
         if ("alias" in val) {
-          const target = byName[val.alias];
+          const target = findAliasTargetByName(val.alias, byName);
           if (!target) {
             stats.errors++;
             continue;
@@ -478,8 +508,14 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
       try {
         const val = token.value;
         if (typeof val === "string" && val.indexOf("{") === 0) {
-          let refName = resolveRefName(val);
-          let refVar = globalVarMap.get(refName);
+          const refName = resolveRefName(val);
+          let refVar: Variable | undefined;
+          const refCandidates = aliasCandidates(refName);
+
+          for (let i = 0; i < refCandidates.length; i++) {
+            refVar = globalVarMap.get(refCandidates[i]);
+            if (refVar) break;
+          }
           
           if (!refVar) {
              const cleanRef = val.replace(/[{}]/g, "");
@@ -503,7 +539,7 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
 // =====================================================
 // UI HANDLER
 // =====================================================
-figma.showUI(__html__, { width: 400, height: 450 });
+figma.showUI(__html__, { width: 400, height: 330, themeColors: true });
 
 figma.ui.onmessage = async (msg) => {
   if (msg.type === "run-automation") {

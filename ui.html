@@ -2,68 +2,137 @@
 <html>
 <head>
   <style>
-    body { font-family: Inter, sans-serif; padding: 20px; color: #333; }
-    h3 { margin-top: 0; margin-bottom: 8px; }
-    p { font-size: 12px; color: #666; margin-bottom: 20px; line-height: 1.4; }
-    
-    .upload-box {
-      border: 2px dashed #ccc;
-      border-radius: 8px;
-      padding: 30px 20px;
-      text-align: center;
-      margin-bottom: 20px;
-      background: #fafafa;
-      transition: all 0.2s;
+    /* Základní reset a Figma Theme Variables */
+    body { 
+      font-family: 'Inter', sans-serif; 
+      padding: 16px; 
+      margin: 0;
+      font-size: 11px;
+      box-sizing: border-box;
+      /* Figma theme colors */
+      background-color: var(--figma-color-bg, #ffffff);
+      color: var(--figma-color-text, #333333);
     }
-    .upload-box:hover { border-color: #999; background: #f0f0f0; }
+    * { box-sizing: border-box; }
+
+    h3 { 
+      font-size: 13px; 
+      font-weight: 600; 
+      margin: 0 0 4px 0; 
+    }
+    p { 
+      color: var(--figma-color-text-secondary, #888888); 
+      margin: 0 0 16px 0; 
+      line-height: 1.4; 
+    }
+    b { color: var(--figma-color-text, #333333); font-weight: 500; }
     
-    /* Skrytý input, stylujeme label */
+    /* Moderní Upload Box s podporou Dark mode */
+    .upload-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border: 1px dashed var(--figma-color-border, #E5E5E5);
+      border-radius: 6px;
+      padding: 24px 16px;
+      text-align: center;
+      margin-bottom: 16px;
+      background: var(--figma-color-bg-secondary, #FAFAFA);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .upload-box:hover { 
+      border-color: var(--figma-color-border-brand, #0D99FF); 
+      background: var(--figma-color-bg-hover, #F5F9FF); 
+    }
+    
+    .upload-icon { font-size: 20px; margin-bottom: 8px; }
+    .upload-title { font-weight: 500; font-size: 12px; margin-bottom: 4px; color: var(--figma-color-text, #333); }
+    .upload-subtitle { font-size: 11px; color: var(--figma-color-text-secondary, #888); }
+    
     input[type="file"] { display: none; }
     
+    /* Figma Button s podporou Dark mode */
     .btn { 
-      display: inline-block;
-      padding: 10px 20px; 
-      background: #18A0FB; 
-      color: white; 
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: 8px 16px; 
+      background: var(--figma-color-bg-brand, #0D99FF); 
+      color: var(--figma-color-text-onbrand, #ffffff); 
+      border: none;
       border-radius: 6px; 
       cursor: pointer; 
+      font-family: 'Inter', sans-serif;
       font-weight: 500;
-      font-size: 13px;
-    }
-    .btn:hover { background: #007BE5; }
-    .btn:disabled { background: #ccc; cursor: not-allowed; }
-
-    .status {
-      margin-top: 15px;
-      padding: 10px;
-      border-radius: 4px;
       font-size: 11px;
-      font-family: monospace;
-      display: none;
+      transition: background 0.2s;
     }
-    .status.info { background: #e0f2ff; color: #004488; display: block; }
-    .status.error { background: #ffe0e0; color: #880000; display: block; }
-    .status.success { background: #e0ffe0; color: #006600; display: block; }
+    .btn:hover { background: var(--figma-color-bg-brand-hover, #007BE5); }
+    .btn:disabled { 
+      background: var(--figma-color-bg-disabled, #E5E5E5); 
+      color: var(--figma-color-text-disabled, #B3B3B3); 
+      cursor: not-allowed; 
+    }
 
-    ul { text-align: left; font-size: 11px; color: #555; margin-top: 10px; }
-    li { margin-bottom: 4px; }
-    .found { color: #00aa00; font-weight: bold; }
-    .missing { color: #cc0000; }
+    /* File List */
+    .file-list { margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px; }
+    .file-item { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+    .file-item svg { width: 14px; height: 14px; flex-shrink: 0; }
+    
+    .file-item.found { color: var(--figma-color-text, #333333); }
+    .file-item.found svg { color: var(--figma-color-icon-success, #14AE5C); } 
+    
+    .file-item.missing { color: var(--figma-color-text-secondary, #888888); }
+    .file-item.missing svg { color: var(--figma-color-icon-danger, #F24822); } 
+
+    /* Status Messages */
+    .status {
+      margin-top: 12px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      display: none;
+      border: 1px solid transparent;
+    }
+    
+    /* Pro status barvy v dark mode je lepší použít jemné ohraničení a barvu textu, než plné pozadí */
+    .status.info { 
+      background: var(--figma-color-bg-secondary, #F5F5F5); 
+      color: var(--figma-color-text, #333333); 
+      display: block; 
+    }
+    .status.error { 
+      background: transparent; 
+      border-color: var(--figma-color-border-danger, #F24822);
+      color: var(--figma-color-text-danger, #F24822); 
+      display: block; 
+    }
+    .status.success { 
+      background: transparent;
+      border-color: var(--figma-color-border-success, #14AE5C);
+      color: var(--figma-color-text-success, #14AE5C); 
+      display: block; 
+    }
   </style>
 </head>
 <body>
   <h3>DTCG Auto-Import</h3>
-  <p>Vyber složku, která obsahuje soubory:<br>
+  <p>Vyber složku obsahující soubory:<br>
   <b>theme.dtcg.json</b>, <b>light.dtcg.json</b> a <b>dark.dtcg.json</b>.</p>
 
   <label class="upload-box">
-    <div style="margin-bottom: 10px; font-weight: bold; font-size: 14px;">📁 Vybrat složku s tokeny</div>
+    <div class="upload-icon">📁</div>
+    <div class="upload-title">Vybrat složku s tokeny</div>
+    <div class="upload-subtitle">Klikni pro výběr složky</div>
     <input type="file" id="folderInput" webkitdirectory directory multiple>
-    <div style="font-size: 11px; color: #888;">Klikni sem pro výběr</div>
   </label>
 
-  <div id="fileList"></div>
-  <button id="btnRun" class="btn" style="width: 100%; display: none;">🚀 Spustit Import</button>
+  <div id="fileList" class="file-list"></div>
+  <button id="btnRun" class="btn" style="display: none;">Spustit import</button>
   <div id="status" class="status"></div>
 
   <script>
@@ -72,6 +141,9 @@
       'light.dtcg.json': 'light',
       'dark.dtcg.json': 'dark'
     };
+
+    const iconCheck = `<svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    const iconCross = `<svg viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
     let filesMap = {};
     const btnRun = document.getElementById('btnRun');
@@ -82,33 +154,30 @@
       const files = Array.from(e.target.files);
       filesMap = {};
       let foundCount = 0;
-      let html = '<ul>';
+      let html = '';
 
-      // Projdeme soubory a najdeme ty správné
       for (const [name, mode] of Object.entries(expectedFiles)) {
         const file = files.find(f => f.name.toLowerCase() === name.toLowerCase());
         if (file) {
           filesMap[mode] = file;
-          html += `<li class="found">✓ ${name}</li>`;
+          html += `<div class="file-item found">${iconCheck} <span>${name}</span></div>`;
           foundCount++;
         } else {
-          html += `<li class="missing">✕ ${name} (nenalezeno)</li>`;
+          html += `<div class="file-item missing">${iconCross} <span>${name} (nenalezeno)</span></div>`;
         }
       }
-      html += '</ul>';
+      
       fileListDiv.innerHTML = html;
 
-      // Povolit tlačítko, pokud máme alespoň theme (definice)
       if (filesMap['definitions']) {
-        btnRun.style.display = 'block';
-        setStatus(`Nalezeno ${foundCount} souborů. Připraveno k importu.`, 'info');
+        btnRun.style.display = 'flex';
+        setStatus(`Nalezeno ${foundCount} souborů. Připraveno.`, 'info');
       } else {
         btnRun.style.display = 'none';
-        setStatus('Chybí soubor theme.dtcg.json, který je nutný pro definice.', 'error');
+        setStatus('Chybí theme.dtcg.json, nutný pro definice.', 'error');
       }
     });
 
-    // Helper pro čtení JSONu
     const readJson = (file) => new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -121,25 +190,23 @@
 
     btnRun.onclick = async () => {
       btnRun.disabled = true;
-      btnRun.innerText = "Načítání souborů...";
+      btnRun.innerText = "Načítání...";
       setStatus("Čtu soubory...", "info");
 
       try {
         const payload = {};
         
-        // Načteme obsah souborů
         if (filesMap['definitions']) payload.definitions = await readJson(filesMap['definitions']);
         if (filesMap['light']) payload.light = await readJson(filesMap['light']);
         if (filesMap['dark']) payload.dark = await readJson(filesMap['dark']);
 
-        // Pošleme vše najednou do code.ts
         parent.postMessage({ pluginMessage: { type: 'run-automation', payload } }, '*');
         
         btnRun.innerText = "Pracuji...";
       } catch (err) {
         setStatus(err, 'error');
         btnRun.disabled = false;
-        btnRun.innerText = "🚀 Spustit Import";
+        btnRun.innerText = "Spustit import";
       }
     };
 
@@ -148,7 +215,6 @@
       statusDiv.innerText = msg;
     }
 
-    // Posloucháme zprávy z pluginu (např. o dokončení)
     window.onmessage = (event) => {
       const msg = event.data.pluginMessage;
       if (msg && msg.type === 'status') {
