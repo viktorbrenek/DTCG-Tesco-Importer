@@ -217,13 +217,22 @@
 
     window.onmessage = (event) => {
       const msg = event.data.pluginMessage;
+      
       if (msg && msg.type === 'status') {
         setStatus(msg.message, 'info');
       }
+      
       if (msg && msg.type === 'complete') {
         setStatus(msg.message, 'success');
-        btnRun.innerText = "Hotovo";
+        
+        // Změníme text a chování tlačítka
+        btnRun.innerText = "Zavřít plugin";
         btnRun.disabled = false;
+        
+        // Po kliknutí pošleme zprávu do code.js, ať plugin ukončí
+        btnRun.onclick = () => {
+          parent.postMessage({ pluginMessage: { type: 'close' } }, '*');
+        };
       }
     };
   </script>

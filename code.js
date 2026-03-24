@@ -238,10 +238,12 @@ function transformName(path, type) {
         );
         return `surface/${foundGroup}/${parts.join("-")}`;
       } else {
+        // TADY SE FILTRUJE NEUTRAL PRO SURFACES
         const parts = path.filter(p => 
           p !== root && 
           p !== "functional" && 
           p !== "neutral" && 
+          p !== "neutral-translucent" && // <-- PŘIDÁNO
           p !== "palette" && 
           p !== "default"
         );
@@ -282,9 +284,11 @@ function transformName(path, type) {
         return `text/${foundGroup}/${parts.join("-")}`;
       }
 
+      // TADY SE FILTRUJE NEUTRAL PRO TEXTY
       const parts = path.filter(p => 
         p !== root && 
         p !== "neutral" && 
+        p !== "neutral-translucent" && // <-- PŘIDÁNO
         p !== "palette" && 
         p !== "default"
       );
@@ -477,9 +481,15 @@ async function importData(data, importMode) {
   return stats;
 }
 
-figma.showUI(__html__, { width: 400, height: 260, themeColors: true });
+figma.showUI(__html__, { width: 400, height: 380, themeColors: true });
 
-figma.ui.onmessage = async (msg) => {
+  figma.ui.onmessage = async (msg) => {
+  // PŘIDEJ TYTO TŘI ŘÁDKY:
+  if (msg.type === "close") {
+    figma.closePlugin();
+    return;
+  }
+
   if (msg.type === "run-automation") {
     const { definitions, light, dark } = msg.payload;
     const totalStats = { created: 0, updated: 0, linked: 0, errors: 0 };
