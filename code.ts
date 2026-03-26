@@ -40,6 +40,9 @@ function aliasCandidates(aliasName: string): string[] {
   if (aliasName.endsWith("-disabled")) {
     candidates.push(aliasName.slice(0, -"-disabled".length));
   }
+  if (aliasName.endsWith("/disabled")) {
+    candidates.push(aliasName.slice(0, -"/disabled".length));
+  }
 
   const uniq: string[] = [];
   for (let i = 0; i < candidates.length; i++) {
@@ -244,6 +247,85 @@ function hexToRgb(hex: string) {
   return { r, g, b, a };
 }
 
+function rgbToHex(value: RGBA): string {
+  const toByte = (channel: number) => {
+    const clamped = Math.max(0, Math.min(1, channel));
+    return Math.round(clamped * 255);
+  };
+
+  const toHex = (channel: number) => {
+    const hex = toByte(channel).toString(16);
+    return hex.length === 1 ? `0${hex}` : hex;
+  };
+  return `#${toHex(value.r)}${toHex(value.g)}${toHex(value.b)}`.toLowerCase();
+}
+
+function normalizeHexString(value: string): string {
+  return `#${value.replace("#", "").trim().slice(0, 6).toLowerCase()}`;
+}
+
+type PaletteAliasCandidate = {
+  hex: string;
+  name: string;
+  variable: Variable;
+};
+
+function buildPaletteAliasCandidates(
+  vars: Variable[],
+  collectionsById: Map<string, VariableCollection>
+): PaletteAliasCandidate[] {
+  const candidates: PaletteAliasCandidate[] = [];
+
+  for (let i = 0; i < vars.length; i++) {
+    const variable = vars[i];
+    const collection = collectionsById.get(variable.variableCollectionId);
+    if (!collection || collection.name !== COLLECTIONS.PALETTE) continue;
+    if (variable.resolvedType !== "COLOR") continue;
+
+    const modeId = collection.modes[0]?.modeId;
+    if (!modeId) continue;
+    const value = variable.valuesByMode[modeId];
+    if (!value || typeof value !== "object" || !("r" in value)) continue;
+
+    candidates.push({
+      hex: rgbToHex(value as RGBA),
+      name: variable.name,
+      variable
+    });
+  }
+
+  return candidates;
+}
+
+function findPaletteAliasTarget(
+  rawPath: string[],
+  hexValue: string,
+  candidates: PaletteAliasCandidate[]
+): Variable | null {
+  if (rawPath.indexOf("palette") === -1) return null;
+
+  const hex = normalizeHexString(hexValue);
+  const matches = candidates.filter((candidate) => candidate.hex === hex);
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0].variable;
+
+  let colorHint = "";
+  const paletteIndex = rawPath.indexOf("palette");
+  if (paletteIndex !== -1 && rawPath[paletteIndex + 1]) {
+    colorHint = rawPath[paletteIndex + 1];
+  }
+
+  if (colorHint) {
+    for (let i = 0; i < matches.length; i++) {
+      if (matches[i].name.indexOf(`${colorHint}-`) === 0) {
+        return matches[i].variable;
+      }
+    }
+  }
+
+  return matches[0].variable;
+}
+
 // =====================================================
 // HLAVNÍ LOGIKA TVORBY NÁZVŮ (TRANSFORMACE)
 // =====================================================
@@ -395,7 +477,10 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
   flattenTokens(data, [], flatTokens);
 
   const allLocalVars = await figma.variables.getLocalVariablesAsync();
+  const allCollections = await figma.variables.getLocalVariableCollectionsAsync();
+  const collectionsById = new Map(allCollections.map((collection) => [collection.id, collection]));
   const globalVarMap = new Map(allLocalVars.map((v) => [v.name, v]));
+  const paletteAliasCandidates = buildPaletteAliasCandidates(allLocalVars, collectionsById);
   
   const rawToVarMap = new Map();
   allLocalVars.forEach((v) => {
@@ -412,6 +497,7 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
       c = figma.variables.createVariableCollection(name);
       c.renameMode(c.modes[0].modeId, name === COLLECTIONS.THEME ? "Light" : "Value");
     }
+    collectionsById.set(c.id, c);
     return c;
   };
 
@@ -527,7 +613,16 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
             stats.linked++;
           }
         } else {
-          variable.setValueForMode(modeId, hexToRgb(val));
+          const paletteAliasTarget = typeof val === "string"
+            ? findPaletteAliasTarget(token.rawPath, val, paletteAliasCandidates)
+            : null;
+
+          if (paletteAliasTarget) {
+            variable.setValueForMode(modeId, figma.variables.createVariableAlias(paletteAliasTarget));
+            stats.linked++;
+          } else {
+            variable.setValueForMode(modeId, hexToRgb(val));
+          }
         }
       } catch (e) { stats.errors++; }
     }
@@ -568,7 +663,6 @@ figma.ui.onmessage = async (msg) => {
       addStats(await importData(dark, "dark"));
     }
 
-    // ZDE JE AUTOMATIZACE TOHO MANUÁLNÍHO KROKU
     if (definitions) {
       const generatedOverrides = generateOverridesFromJSON(definitions);
       if (generatedOverrides.length > 0) {
