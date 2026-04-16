@@ -11,6 +11,45 @@ const COLLECTIONS = {
 };
 
 // =====================================================
+// IMPORT CONTEXT — jedno fetch na celý import
+// =====================================================
+type ImportContext = {
+  collections: VariableCollection[];
+  collectionsById: Map<string, VariableCollection>;
+  allVars: Variable[];
+  varByName: Map<string, Variable>;     // "name\0collectionId" -> Variable  (O(1) lookup)
+  globalVarMap: Map<string, Variable>;  // name -> Variable (any collection)
+  paletteAliasCandidates: PaletteAliasCandidate[];
+  rawToVarMap: Map<string, Variable>;
+};
+
+async function buildContext(): Promise<ImportContext> {
+  const allVars = await figma.variables.getLocalVariablesAsync();
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  const collectionsById = new Map(collections.map(c => [c.id, c]));
+  const globalVarMap = new Map(allVars.map(v => [v.name, v]));
+  const varByName = new Map<string, Variable>();
+  for (const v of allVars) {
+    varByName.set(`${v.name}\0${v.variableCollectionId}`, v);
+  }
+  const paletteAliasCandidates = buildPaletteAliasCandidates(allVars, collectionsById);
+  const rawToVarMap = new Map<string, Variable>();
+  for (const v of allVars) {
+    rawToVarMap.set(v.name, v);
+    rawToVarMap.set(v.name.replace(/\//g, "."), v);
+  }
+  return { collections, collectionsById, allVars, varByName, globalVarMap, paletteAliasCandidates, rawToVarMap };
+}
+
+function registerVar(ctx: ImportContext, v: Variable): void {
+  ctx.allVars.push(v);
+  ctx.globalVarMap.set(v.name, v);
+  ctx.varByName.set(`${v.name}\0${v.variableCollectionId}`, v);
+  ctx.rawToVarMap.set(v.name, v);
+  ctx.rawToVarMap.set(v.name.replace(/\//g, "."), v);
+}
+
+// =====================================================
 // =====================================================
 // MANUÁLNÍ DOPLŇKY -> NYNÍ AUTOMATIZOVANÉ
 // =====================================================
@@ -51,11 +90,14 @@ function aliasCandidates(aliasName: string): string[] {
   return uniq;
 }
 
-function findAliasTargetByName(aliasName: string, byName: { [name: string]: Variable }): Variable | null {
+function findAliasTargetByName(
+  aliasName: string,
+  globalVarMap: Map<string, Variable>
+): { variable: Variable; wasFallback: boolean } | null {
   const candidates = aliasCandidates(aliasName);
   for (let i = 0; i < candidates.length; i++) {
-    const target = byName[candidates[i]];
-    if (target) return target;
+    const target = globalVarMap.get(candidates[i]);
+    if (target) return { variable: target, wasFallback: i > 0 };
   }
   return null;
 }
@@ -72,7 +114,7 @@ function generateOverridesFromJSON(definitionsData: any): ManualOverride[] {
 
   for (const token of flatTokens) {
     if (token.type !== "color") continue;
-    
+
     const root = token.rawPath[0];
     let isAllowed = false;
     for (let i = 0; i < allowedRoots.length; i++) {
@@ -83,18 +125,15 @@ function generateOverridesFromJSON(definitionsData: any): ManualOverride[] {
     }
     if (!isAllowed) continue;
 
-    // Využijeme tvou vlastní transformační logiku k vytvoření názvu (např. surface/brand/primary-subtle-hover)
     const varName = transformName(token.rawPath, "theme");
     const val = token.value;
 
     let manualVal: ManualValue | null = null;
 
     if (typeof val === "string" && val.indexOf("{") === 0) {
-      // Je to alias na jinou barvu (z JSONu, např. {surfaces.palette.purpleheart.subtle.hover})
       const ref = resolveRefName(val);
       manualVal = { alias: ref };
     } else if (typeof val === "string" && (val.startsWith("#") || val.length === 7 || val.length === 9)) {
-      // Je to tvrdá hex hodnota
       manualVal = { hex: val };
     }
 
@@ -114,39 +153,18 @@ function generateOverridesFromJSON(definitionsData: any): ManualOverride[] {
   return overrides;
 }
 
-async function applyManualOverrides(overrides: ManualOverride[]) {
-  const stats = { created: 0, updated: 0, linked: 0, errors: 0 };
+async function applyManualOverrides(overrides: ManualOverride[], ctx: ImportContext) {
+  const stats = { created: 0, updated: 0, linked: 0, errors: 0, fallbacks: 0 };
   if (!overrides || overrides.length === 0) return stats;
 
-  const cols = await figma.variables.getLocalVariableCollectionsAsync();
-  const vars = await figma.variables.getLocalVariablesAsync();
-
-  // map: variable name -> variable
-  const byName: { [name: string]: Variable } = {};
-  for (let i = 0; i < vars.length; i++) byName[vars[i].name] = vars[i];
-
   const getOrCreateCollection = (name: string): VariableCollection => {
-    for (let i = 0; i < cols.length; i++) {
-      if (cols[i].name === name) return cols[i];
+    for (let i = 0; i < ctx.collections.length; i++) {
+      if (ctx.collections[i].name === name) return ctx.collections[i];
     }
     const c = figma.variables.createVariableCollection(name);
-    cols.push(c);
+    ctx.collections.push(c);
+    ctx.collectionsById.set(c.id, c);
     return c;
-  };
-
-  const getModeId = (col: VariableCollection, modeName: string): string | null => {
-    for (let i = 0; i < col.modes.length; i++) {
-      if (col.modes[i].name === modeName) return col.modes[i].modeId;
-    }
-    return null;
-  };
-
-  const findVarInCollection = (name: string, collectionId: string): Variable | null => {
-    for (let i = 0; i < vars.length; i++) {
-      const v = vars[i];
-      if (v.name === name && v.variableCollectionId === collectionId) return v;
-    }
-    return null;
   };
 
   for (let i = 0; i < overrides.length; i++) {
@@ -154,64 +172,40 @@ async function applyManualOverrides(overrides: ManualOverride[]) {
     try {
       const col = getOrCreateCollection(def.collection);
 
-      let v = findVarInCollection(def.name, col.id);
+      let v = ctx.varByName.get(`${def.name}\0${col.id}`) ?? null;
       if (!v) {
         v = figma.variables.createVariable(def.name, col, def.resolvedType);
-        vars.push(v);
-        byName[v.name] = v;
+        registerVar(ctx, v);
         stats.created++;
       } else {
         stats.updated++;
       }
 
-      // per-mode values (bez iteraci přes klíče)
       for (const modeName in def.values) {
         if (!Object.prototype.hasOwnProperty.call(def.values, modeName)) continue;
         const val = def.values[modeName];
 
-        let modeId = getModeId(col, modeName);
-
-        // když mód neexistuje, zkusíme ho vytvořit (typicky u Theme "Dark")
-        if (!modeId) {
-          try {
-            col.addMode(modeName);
-            modeId = getModeId(col, modeName);
-          } catch (e) {
-            // některé kolekce/módy nepůjdou přidat — přeskočíme
-            continue;
-          }
-        }
+        const modeId = getOrCreateModeId(col, modeName);
         if (!modeId) continue;
 
         if ("alias" in val) {
-          const target = findAliasTargetByName(val.alias, byName);
-          if (!target) {
-            stats.errors++;
-            continue;
-          }
-          if (target.resolvedType !== v.resolvedType) {
-            stats.errors++;
-            continue;
-          }
-          v.setValueForMode(modeId, figma.variables.createVariableAlias(target));
+          const result = findAliasTargetByName(val.alias, ctx.globalVarMap);
+          if (!result) { stats.errors++; continue; }
+          if (result.variable.resolvedType !== v.resolvedType) { stats.errors++; continue; }
+          v.setValueForMode(modeId, figma.variables.createVariableAlias(result.variable));
           stats.linked++;
+          if (result.wasFallback) stats.fallbacks++;
           continue;
         }
 
         if ("hex" in val) {
-          if (v.resolvedType !== "COLOR") {
-            stats.errors++;
-            continue;
-          }
+          if (v.resolvedType !== "COLOR") { stats.errors++; continue; }
           v.setValueForMode(modeId, hexToRgb(val.hex));
           continue;
         }
 
         if ("float" in val) {
-          if (v.resolvedType !== "FLOAT") {
-            stats.errors++;
-            continue;
-          }
+          if (v.resolvedType !== "FLOAT") { stats.errors++; continue; }
           v.setValueForMode(modeId, val.float);
           continue;
         }
@@ -333,7 +327,7 @@ function transformName(
   path: string[],
   type: "palette" | "theme" | "radius" | "spacing"
 ): string {
-  
+
   // 1. PALETTE (zůstává stejné)
   if (type === "palette") {
     if (path[0] === "palette") return `${path[1]}-${path[2]}`;
@@ -348,7 +342,7 @@ function transformName(
 
   // 3. THEME
   if (type === "theme") {
-    const root = path[0]; 
+    const root = path[0];
 
     // --- A) SURFACES ---
     if (root.indexOf("surfaces") === 0) {
@@ -362,19 +356,19 @@ function transformName(
       }
 
       if (foundGroup) {
-        const parts = path.filter(p => 
-          p !== root && 
-          p !== "functional" && 
-          p !== "default" && 
+        const parts = path.filter(p =>
+          p !== root &&
+          p !== "functional" &&
+          p !== "default" &&
           p !== foundGroup
         );
         return `surface/${foundGroup}/${parts.join("-")}`;
       } else {
-        const parts = path.filter(p => 
-          p !== root && 
-          p !== "functional" && 
-          p !== "neutral" && 
-          p !== "palette" && 
+        const parts = path.filter(p =>
+          p !== root &&
+          p !== "functional" &&
+          p !== "neutral" &&
+          p !== "palette" &&
           p !== "default"
         );
         return `surface/${parts.join("-")}`;
@@ -386,11 +380,11 @@ function transformName(
       if (path.indexOf("on-surface") !== -1) {
         const role = path[path.length - 1];
         const groupName = `${role}-on-surface`;
-        const parts = path.filter(p => 
-          p !== root && 
-          p !== "functional" && 
-          p !== "on-surface" && 
-          p !== "palette" && 
+        const parts = path.filter(p =>
+          p !== root &&
+          p !== "functional" &&
+          p !== "on-surface" &&
+          p !== "palette" &&
           p !== role
         );
         return `text/${groupName}/${parts.join("-")}`;
@@ -406,19 +400,19 @@ function transformName(
       }
 
       if (foundGroup) {
-        const parts = path.filter(p => 
-          p !== root && 
-          p !== "functional" && 
-          p !== "default" && 
+        const parts = path.filter(p =>
+          p !== root &&
+          p !== "functional" &&
+          p !== "default" &&
           p !== foundGroup
         );
         return `text/${foundGroup}/${parts.join("-")}`;
       }
 
-      const parts = path.filter(p => 
-        p !== root && 
-        p !== "neutral" && 
-        p !== "palette" && 
+      const parts = path.filter(p =>
+        p !== root &&
+        p !== "neutral" &&
+        p !== "palette" &&
         p !== "default"
       );
       return `text/${parts.join("-")}`;
@@ -448,23 +442,37 @@ function resolveRefName(ref: string): string {
   const parts = clean.split(".");
 
   let type: "palette" | "theme" | "radius" | "spacing" = "theme";
-  
+
   if (parts[0].indexOf("palette") !== -1) type = "palette";
   else if (parts[0] === "radius") type = "radius";
   else if (parts[0] === "spacing") type = "spacing";
-  
+
   return transformName(parts, type);
 }
 
-function flattenTokens(node: any, path: string[], result: any[]) {
+// DTCG $type dědičnost — branch nody předávají $type dolů potomkům bez vlastního $type
+function flattenTokens(node: any, path: string[], result: any[], inheritedType?: string) {
   for (const key in node) {
     const item = node[key];
     const newPath = [...path, key];
     if (item && typeof item === "object" && "$value" in item) {
-      result.push({ rawPath: newPath, value: item.$value, type: item.$type });
+      result.push({ rawPath: newPath, value: item.$value, type: item.$type ?? inheritedType });
     } else if (item && typeof item === "object" && !Array.isArray(item)) {
-      flattenTokens(item, newPath, result);
+      flattenTokens(item, newPath, result, item.$type ?? inheritedType);
     }
+  }
+}
+
+// Vrátí modeId pro daný mód, nebo se pokusí mód vytvořit. Vrací null při selhání.
+function getOrCreateModeId(collection: VariableCollection, modeName: string): string | null {
+  const existing = collection.modes.find(m => m.name === modeName);
+  if (existing) return existing.modeId;
+  try {
+    collection.addMode(modeName);
+    const m = collection.modes.find(m => m.name === modeName);
+    return m ? m.modeId : null;
+  } catch (e) {
+    return null;
   }
 }
 
@@ -472,32 +480,24 @@ function flattenTokens(node: any, path: string[], result: any[]) {
 // IMPORTÉR
 // =====================================================
 
-async function importData(data: any, importMode: "definitions" | "light" | "dark") {
+async function importData(
+  data: any,
+  importMode: "definitions" | "light" | "dark",
+  ctx: ImportContext
+) {
   const flatTokens: any[] = [];
   flattenTokens(data, [], flatTokens);
 
-  const allLocalVars = await figma.variables.getLocalVariablesAsync();
-  const allCollections = await figma.variables.getLocalVariableCollectionsAsync();
-  const collectionsById = new Map(allCollections.map((collection) => [collection.id, collection]));
-  const globalVarMap = new Map(allLocalVars.map((v) => [v.name, v]));
-  const paletteAliasCandidates = buildPaletteAliasCandidates(allLocalVars, collectionsById);
-  
-  const rawToVarMap = new Map();
-  allLocalVars.forEach((v) => {
-    rawToVarMap.set(v.name, v);
-    rawToVarMap.set(v.name.replace(/\//g, "."), v);
-  });
+  let stats = { created: 0, updated: 0, linked: 0, errors: 0, fallbacks: 0 };
 
-  let stats = { created: 0, updated: 0, linked: 0, errors: 0 };
-
-  const getCollection = async (name: string) => {
-    const cols = await figma.variables.getLocalVariableCollectionsAsync();
-    let c = cols.find((x) => x.name === name);
+  const getCollection = (name: string): VariableCollection => {
+    let c = ctx.collections.find(x => x.name === name);
     if (!c) {
       c = figma.variables.createVariableCollection(name);
       c.renameMode(c.modes[0].modeId, name === COLLECTIONS.THEME ? "Light" : "Value");
+      ctx.collections.push(c);
+      ctx.collectionsById.set(c.id, c);
     }
-    collectionsById.set(c.id, c);
     return c;
   };
 
@@ -514,20 +514,19 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
 
       if (token.type === "shadow") continue;
 
-      const collection = await getCollection(targetCol);
+      const collection = getCollection(targetCol);
       const modeId = collection.modes[0].modeId;
       const varName = transformName(token.rawPath, type);
 
-      let variable = allLocalVars.find(v => v.name === varName && v.variableCollectionId === collection.id);
-      
+      let variable = ctx.varByName.get(`${varName}\0${collection.id}`) ?? null;
+
       if (!variable) {
         let varType: VariableResolvedDataType = token.type === "color" ? "COLOR" : "FLOAT";
         if (typeof token.value === "string" && token.value.indexOf("px") !== -1) varType = "FLOAT";
-        
+
         try {
           variable = figma.variables.createVariable(varName, collection, varType);
-          allLocalVars.push(variable);
-          globalVarMap.set(varName, variable);
+          registerVar(ctx, variable);
           stats.created++;
         } catch (e) { stats.errors++; continue; }
       } else { stats.updated++; }
@@ -535,10 +534,11 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
       try {
         if (typeof token.value === "string" && token.value.indexOf("{") === 0) {
            const refName = resolveRefName(token.value);
-           const refVar = globalVarMap.get(refName);
-           if (refVar && variable.resolvedType === refVar.resolvedType) {
-             variable.setValueForMode(modeId, figma.variables.createVariableAlias(refVar));
+           const result = findAliasTargetByName(refName, ctx.globalVarMap);
+           if (result && variable.resolvedType === result.variable.resolvedType) {
+             variable.setValueForMode(modeId, figma.variables.createVariableAlias(result.variable));
              stats.linked++;
+             if (result.wasFallback) stats.fallbacks++;
            }
         } else {
            if (variable.resolvedType === "COLOR") variable.setValueForMode(modeId, hexToRgb(token.value));
@@ -548,27 +548,26 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
     }
   }
   else {
-    const collection = await getCollection(COLLECTIONS.THEME);
-    let modeId = "";
-    
+    const collection = getCollection(COLLECTIONS.THEME);
+
+    let modeId: string | null = null;
     if (importMode === "light") {
       const m = collection.modes.find((x) => x.name === "Light") || collection.modes[0];
       if (m.name !== "Light") collection.renameMode(m.modeId, "Light");
       modeId = m.modeId;
     } else {
-      let m = collection.modes.find((x) => x.name === "Dark");
-      if (!m) {
-        try { collection.addMode("Dark"); m = collection.modes.find((x) => x.name === "Dark"); }
-        catch (e) { figma.notify("Nelze přidat Dark mode"); return stats; }
+      modeId = getOrCreateModeId(collection, "Dark");
+      if (!modeId) {
+        figma.notify("Nelze přidat Dark mode");
+        return stats;
       }
-      modeId = m!.modeId;
     }
 
     const allowedRoots = ["surfaces", "surfaces-functional", "text-colors", "text-colors-functional", "borders", "overlays"];
 
     for (const token of flatTokens) {
       if (token.type === "shadow") continue;
-      
+
       let isAllowed = false;
       for (const r of allowedRoots) {
         if (token.rawPath[0].indexOf(r) === 0) {
@@ -579,14 +578,13 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
       if (!isAllowed) continue;
 
       const varName = transformName(token.rawPath, "theme");
-      
-      let variable = allLocalVars.find(v => v.name === varName && v.variableCollectionId === collection.id);
-      
+
+      let variable = ctx.varByName.get(`${varName}\0${collection.id}`) ?? null;
+
       if (!variable) {
         try {
           variable = figma.variables.createVariable(varName, collection, "COLOR");
-          allLocalVars.push(variable);
-          globalVarMap.set(varName, variable);
+          registerVar(ctx, variable);
           stats.created++;
         } catch (e) { stats.errors++; continue; }
       } else { stats.updated++; }
@@ -595,26 +593,24 @@ async function importData(data: any, importMode: "definitions" | "light" | "dark
         const val = token.value;
         if (typeof val === "string" && val.indexOf("{") === 0) {
           const refName = resolveRefName(val);
-          let refVar: Variable | undefined;
-          const refCandidates = aliasCandidates(refName);
+          const result = findAliasTargetByName(refName, ctx.globalVarMap);
 
-          for (let i = 0; i < refCandidates.length; i++) {
-            refVar = globalVarMap.get(refCandidates[i]);
-            if (refVar) break;
-          }
-          
-          if (!refVar) {
-             const cleanRef = val.replace(/[{}]/g, "");
-             refVar = rawToVarMap.get(cleanRef);
-          }
-
-          if (refVar) {
-            variable.setValueForMode(modeId, figma.variables.createVariableAlias(refVar));
+          if (!result) {
+            const cleanRef = val.replace(/[{}]/g, "");
+            const rawFallback = ctx.rawToVarMap.get(cleanRef);
+            if (rawFallback) {
+              variable.setValueForMode(modeId, figma.variables.createVariableAlias(rawFallback));
+              stats.linked++;
+              stats.fallbacks++;
+            }
+          } else {
+            variable.setValueForMode(modeId, figma.variables.createVariableAlias(result.variable));
             stats.linked++;
+            if (result.wasFallback) stats.fallbacks++;
           }
         } else {
           const paletteAliasTarget = typeof val === "string"
-            ? findPaletteAliasTarget(token.rawPath, val, paletteAliasCandidates)
+            ? findPaletteAliasTarget(token.rawPath, val, ctx.paletteAliasCandidates)
             : null;
 
           if (paletteAliasTarget) {
@@ -639,39 +635,44 @@ figma.showUI(__html__, { width: 400, height: 330, themeColors: true });
 figma.ui.onmessage = async (msg) => {
   if (msg.type === "run-automation") {
     const { definitions, light, dark } = msg.payload;
-    const totalStats = { created: 0, updated: 0, linked: 0, errors: 0 };
+    const totalStats = { created: 0, updated: 0, linked: 0, errors: 0, fallbacks: 0 };
 
     const addStats = (s: any) => {
       totalStats.created += s.created;
       totalStats.updated += s.updated;
       totalStats.linked += s.linked;
       totalStats.errors += s.errors;
+      totalStats.fallbacks += s.fallbacks;
     };
+
+    // Jeden fetch na celý import
+    const ctx = await buildContext();
 
     if (definitions) {
       figma.ui.postMessage({ type: "status", message: "Importuji Definice..." });
-      addStats(await importData(definitions, "definitions"));
+      addStats(await importData(definitions, "definitions", ctx));
     }
 
     if (light) {
       figma.ui.postMessage({ type: "status", message: "Importuji Light Mode..." });
-      addStats(await importData(light, "light"));
+      addStats(await importData(light, "light", ctx));
     }
 
     if (dark) {
       figma.ui.postMessage({ type: "status", message: "Importuji Dark Mode..." });
-      addStats(await importData(dark, "dark"));
+      addStats(await importData(dark, "dark", ctx));
     }
 
     if (definitions) {
       const generatedOverrides = generateOverridesFromJSON(definitions);
       if (generatedOverrides.length > 0) {
         figma.ui.postMessage({ type: "status", message: "Aplikuji automatizované doplňky z JSONu..." });
-        addStats(await applyManualOverrides(generatedOverrides));
+        addStats(await applyManualOverrides(generatedOverrides, ctx));
       }
     }
 
-    figma.notify(`Hotovo! Vytvořeno: ${totalStats.created}, Propojeno: ${totalStats.linked}`);
+    const fallbackNote = totalStats.fallbacks > 0 ? `, Fallbacky: ${totalStats.fallbacks}` : "";
+    figma.notify(`Hotovo! Vytvořeno: ${totalStats.created}, Propojeno: ${totalStats.linked}${fallbackNote}`);
     figma.ui.postMessage({ type: "complete", message: "Hotovo!" });
   }
 };
